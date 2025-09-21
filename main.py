@@ -88,7 +88,8 @@ history = []
 
 
 class HotKey(QThread):
-    ShowWindow = pyqtSignal(int)
+    showWindow = pyqtSignal(int)
+    error = pyqtSignal()
 
     def __init__(self):
         super(HotKey, self).__init__()
@@ -96,24 +97,30 @@ class HotKey(QThread):
 
     def run(self):
         user32 = windll.user32
-        notifier = ToastNotifier()
-        notifier.show_toast('Latexer', '程序已启动，按 Alt + E 呼出面板。输入 //help 查看帮助。', duration=5, threaded=True,
-                            icon_path=FILEDIR + "/LatexerIcon.ico")
+        if not user32.RegisterHotKey(None, 1, win32con.MOD_ALT, self.main_key):
+            self.error.emit()
+            return
+        else:
+            notifier = ToastNotifier()
+            notifier.show_toast('Latexer', '程序已启动，按 Alt + E 呼出面板。输入 //help 查看帮助。', duration=5,
+                                threaded=True,
+                                icon_path=FILEDIR + "/LatexerIcon.ico")
         while True:
-            if not user32.RegisterHotKey(None, 1, win32con.MOD_ALT, self.main_key):  # alt+~
-                tkinter.messagebox.showerror("错误", "全局热键注册失败。")
             try:
                 msg = MSG()
                 if user32.GetMessageA(byref(msg), None, 0, 0) != 0:
                     if msg.message == win32con.WM_HOTKEY:
                         if msg.wParam == win32con.MOD_ALT:
-                            self.ShowWindow.emit(msg.lParam)
+                            self.showWindow.emit(msg.lParam)
             finally:
                 user32.UnregisterHotKey(None, 1)
+                if not user32.RegisterHotKey(None, 1, win32con.MOD_ALT, self.main_key):
+                    self.error.emit()
+                    return
 
 
 class Widget(QWidget):
-    ShowWindow = pyqtSignal(int)
+    showWindow = pyqtSignal(int)
 
     def __init__(self):
         super(Widget, self).__init__()
@@ -146,7 +153,7 @@ class Widget(QWidget):
         self.label.setWordWrap(True)
         self.label.setObjectName("label")
 
-        self.label.setStyleSheet("background:rgba(255,255,255,.5);color:red;border-radius:3px;padding:3px;")
+        self.label.setStyleSheet("background:rgba(255,255,255,.7);color:red;border-radius:3px;padding:3px;")
         self.lineEdit.setStyleSheet("border-radius:3px;")
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Drawer)
@@ -175,37 +182,50 @@ class Widget(QWidget):
         self.lineEdit.setText(history[self.historyPos])
         print(self.historyPos, history)
 
+    def setLabel(self, text):
+        self.label.setText(text)
+        labelWidth = 261
+        labelHeight = self.label.heightForWidth(labelWidth)
+        print(labelHeight)
+        if labelHeight > 500:
+            labelWidth = 800
+            labelHeight = self.label.heightForWidth(labelWidth)
+        self.label.setGeometry(QRect(10, 50, labelWidth, labelHeight))
+        self.resize(280 + labelWidth, 259 + labelHeight)
+
     def convert(self):
+        self.toolButton.setEnabled(False)
+        self.label.setText("")
+        self.label.setGeometry(QRect(10, 50, 0, 0))
         latex = self.lineEdit.text().strip().strip("$").strip()
-        if latex == "//info":
-            tkinter.messagebox.showinfo("关于", "Latexer | Version " + str(
-                VERSION) + "\nLicensed Under The MIT License\n\nAuthor: HShiDianLu.\nGithub: https://github.com/HShiDianLu/Latexer")
+        if latex[0:2] == "//":
+            op = latex[2:]
+            if op == "info":
+                tkinter.messagebox.showinfo("关于", "Latexer | Version " + str(
+                    VERSION) + "\nLicensed Under The MIT License\n\nAuthor: HShiDianLu.\nGithub: https://github.com/HShiDianLu/Latexer")
+            elif op == "help":
+                tkinter.messagebox.showinfo("热键与指令说明",
+                                            "Alt + K - 打开主面板\n上下箭头 - 查看历史纪录\n\n//info - 打开关于页面\n//help - 打开此页面\n//exit - 退出程序")
+            elif op == "exit":
+                sys.exit()
+            else:
+                self.setLabel("无法识别的指令: " + op + "。\n输入 //help 查看帮助。")
+            self.toolButton.setEnabled(True)
             return
-        elif latex == "//help":
-            tkinter.messagebox.showinfo("热键与指令说明",
-                                        "Alt + K - 打开主面板\n上下箭头 - 查看历史纪录\n\n//info - 打开关于页面\n//help - 打开此页面\n//exit - 退出程序")
-            return
-        elif latex == "//exit":
-            sys.exit()
         latex = "$" + latex + "$"
         if latex.replace(" ", "") == "$$":
             self.switchWindow()
+            self.toolButton.setEnabled(True)
             return
         filename = FILEDIR + "/latex_" + str(time.time()).replace(".", "") + ".png"
         try:
             mathtext.math_to_image(latex, filename, dpi=140)
         except Exception as e:
             print(str(e))
-            self.label.setText(str(e))
-            labelWidth = 261
-            labelHeight = self.label.heightForWidth(labelWidth)
-            print(labelHeight)
-            if labelHeight > 500:
-                labelWidth = 800
-                labelHeight = self.label.heightForWidth(labelWidth)
-            self.label.setGeometry(QRect(10, 50, labelWidth, labelHeight))
-            self.resize(280 + labelWidth, 259 + labelHeight)
+            self.setLabel("Latex 渲染失败:\n" + str(e))
+            self.toolButton.setEnabled(True)
             return
+        self.toolButton.setEnabled(True)
         self.switchWindow()
         copyImg(filename)
         keyboard.press_and_release('ctrl+v')
@@ -219,11 +239,11 @@ class Widget(QWidget):
             self.show()
             self.move(QCursor.pos().x() + 10, QCursor.pos().y())
             self.status = True
-            self.label.setText("")
             self.lineEdit.setText("$  $")
             self.lineEdit.setCursorPosition(2)
             gw.getWindowsWithTitle('Latexer UI')[0].activate()
             self.lineEdit.setFocus()
+            self.label.setText("")
             self.label.setGeometry(QRect(10, 50, 0, 0))
             self.historyPos = 0
         else:
@@ -240,6 +260,12 @@ class Widget(QWidget):
         self.toolButton.setText(_translate("Form", "OK"))
 
 
+def errorCallback():
+    tkinter.messagebox.showerror("错误",
+                                 "全局热键注册失败。这可能是由于：\n1. 已经有一个正在运行的程序了。\n2. 热键冲突，请检查有无占用了 Alt + E 热键的程序。\n\n按确定退出程序。")
+    sys.exit()
+
+
 if __name__ == '__main__':
     QApplication.setHighDpiScaleFactorRoundingPolicy(Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling)
@@ -247,6 +273,7 @@ if __name__ == '__main__':
     app = QApplication(sys.argv)
     ui = Widget()
     listener = HotKey()
-    listener.ShowWindow.connect(ui.hotKeyCallback)
+    listener.showWindow.connect(ui.hotKeyCallback)
+    listener.error.connect(errorCallback)
     listener.start()
     sys.exit(app.exec_())
